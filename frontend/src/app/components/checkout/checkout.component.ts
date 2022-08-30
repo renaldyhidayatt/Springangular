@@ -9,12 +9,14 @@ import { Router } from '@angular/router';
 import { Country } from 'src/app/common/country';
 import { Order } from 'src/app/common/order';
 import { OrderItem } from 'src/app/common/order-item';
+import { PaymentInfo } from 'src/app/common/paymentinnfo';
 import { Purchase } from 'src/app/common/purchase';
 import { State } from 'src/app/common/state';
 import { CartService } from 'src/app/service/cart.service';
 import { CheckoutService } from 'src/app/service/checkout.service';
 import { Luv2ShopFromServiceService } from 'src/app/service/luv2-shop-from-service.service';
 import { Luv2ShopValidators } from 'src/app/validators/luv2-shop-validators';
+import { environment } from 'src/environments/environment';
 
 @Component({
   selector: 'app-checkout',
@@ -35,13 +37,24 @@ export class CheckoutComponent implements OnInit {
   shippingAddressStates: State[] = [];
   billingAddressStates: State[] = [];
 
+  storage: Storage = sessionStorage;
+
+  // initialize Stripe API
+  stripe = Stripe(environment.stripePublishableKey);
+
+  paymentInfo: PaymentInfo = new PaymentInfo();
+  cardElement: any;
+  displayError: any = "";
+
+  isDisabled: boolean = false;
+
   constructor(
     private formBuilder: FormBuilder,
     private luv2ShopFormService: Luv2ShopFromServiceService,
     private cartService: CartService,
     private checkoutService: CheckoutService,
     private router: Router
-  ) {}
+  ) { }
 
   ngOnInit(): void {
     this.reviewCartDetails();
@@ -104,50 +117,68 @@ export class CheckoutComponent implements OnInit {
         ]),
       }),
       creditCard: this.formBuilder.group({
-        cardType: new FormControl('', [Validators.required]),
-        nameOnCard: new FormControl('', [
-          Validators.required,
-          Validators.minLength(2),
-          Luv2ShopValidators.notOnlyWhitespace,
-        ]),
-        cardNumber: new FormControl('', [
-          Validators.required,
-          Validators.pattern('[0-9]{16}'),
-        ]),
-        securityCode: new FormControl('', [
-          Validators.required,
-          Validators.pattern('[0-9]{3}'),
-        ]),
-        expirationMonth: [''],
-        expirationYear: [''],
+        // cardType: new FormControl('', [Validators.required]),
+        // nameOnCard: new FormControl('', [
+        //   Validators.required,
+        //   Validators.minLength(2),
+        //   Luv2ShopValidators.notOnlyWhitespace,
+        // ]),
+        // cardNumber: new FormControl('', [
+        //   Validators.required,
+        //   Validators.pattern('[0-9]{16}'),
+        // ]),
+        // securityCode: new FormControl('', [
+        //   Validators.required,
+        //   Validators.pattern('[0-9]{3}'),
+        // ]),
+        // expirationMonth: [''],
+        // expirationYear: [''],
       }),
     });
 
     // populate credit card months
 
-    const startMonth: number = new Date().getMonth() + 1;
-    console.log('startMonth: ' + startMonth);
+    // const startMonth: number = new Date().getMonth() + 1;
+    // console.log('startMonth: ' + startMonth);
 
-    this.luv2ShopFormService
-      .getCreditCardMonths(startMonth)
-      .subscribe((data) => {
-        console.log('Retrieved credit card months: ' + JSON.stringify(data));
-        this.creditCardMonths = data;
-      });
+    // this.luv2ShopFormService
+    //   .getCreditCardMonths(startMonth)
+    //   .subscribe((data) => {
+    //     console.log('Retrieved credit card months: ' + JSON.stringify(data));
+    //     this.creditCardMonths = data;
+    //   });
 
-    // populate credit card years
+    // // populate credit card years
 
-    this.luv2ShopFormService.getCreditCardYears().subscribe((data) => {
-      console.log('Retrieved credit card years: ' + JSON.stringify(data));
-      this.creditCardYears = data;
-    });
+    // this.luv2ShopFormService.getCreditCardYears().subscribe((data) => {
+    //   console.log('Retrieved credit card years: ' + JSON.stringify(data));
+    //   this.creditCardYears = data;
+    // });
 
-    // populate countries
+    // // populate countries
 
     this.luv2ShopFormService.getCountries().subscribe((data) => {
       console.log('Retrieved countries: ' + JSON.stringify(data));
       this.countries = data;
     });
+  }
+
+  setupStripePaymentForm() {
+    var elements = this.stripe.elements();
+
+    this.cardElement = elements.create('card', { hidePostalCode: true })
+
+    this.cardElement.mount("#card-element");
+
+    this.cardElement.on('change', (event) => {
+      this.displayError = document.getElementById("card-errors");
+
+      if (event.complete) {
+        this.displayError.textContent = "";
+      } else if (event.error) {
+        this.displayError.textContent = event.error.message;
+      }
+    })
   }
 
   reviewCartDetails() {
@@ -245,6 +276,7 @@ export class CheckoutComponent implements OnInit {
     order.totalQuantity = this.totalQuantity;
 
     const cartItems = this.cartService.cartItems;
+
     let orderItems: OrderItem[] = cartItems.map(
       (tempCartItem) => new OrderItem(tempCartItem)
     );
@@ -280,17 +312,60 @@ export class CheckoutComponent implements OnInit {
     purchase.order = order;
     purchase.orderItems = orderItems;
 
-    this.checkoutService.placeOrder(purchase).subscribe({
-      next: (response) => {
-        alert(
-          `Your order has been received.\nOrder tracking number: ${response.orderTrackingNumber}`
-        );
-        this.resetCart();
-      },
-      error: (err) => {
-        alert(`There was an error: ${err.message}`);
-      },
-    });
+    this.paymentInfo.amount = Math.round(this.totalPrice * 100);
+    this.paymentInfo.currency = "USD";
+    this.paymentInfo.receiptEmail = purchase.customer.email;
+
+
+    if (!this.checkoutFormGroup.invalid && this.displayError.textContent === "") {
+
+      this.isDisabled = true;
+
+      this.checkoutService.createPaymentIntent(this.paymentInfo).subscribe(
+        (paymentIntentResponse) => {
+          this.stripe.confirmCardPayment(paymentIntentResponse.client_secret,
+            {
+              payment_method: {
+                card: this.cardElement,
+                billing_details: {
+                  email: purchase.customer.email,
+                  name: `${purchase.customer.firstName} ${purchase.customer.lastName}`,
+                  address: {
+                    line1: purchase.billingAddress.street,
+                    city: purchase.billingAddress.city,
+                    state: purchase.billingAddress.state,
+                    postal_code: purchase.billingAddress.zipCode,
+                    country: this.billingAddressCountry.value.code
+                  }
+                }
+              }
+            }, { handleActions: false })
+            .then(function (result) {
+              if (result.error) {
+                alert(`There was an error: ${result.error.message}`);
+                this.isDisabled = false;
+              } else {
+                this.checkoutService.placeOrder(purchase).subscribe({
+                  next: response => {
+                    alert(`Your order has been received.\nOrder tracking number: ${response.orderTrackingNumber}`);
+
+                    // reset cart
+                    this.resetCart();
+                    this.isDisabled = false;
+                  },
+                  error: err => {
+                    alert(`There was an error: ${err.message}`);
+                    this.isDisabled = false;
+                  }
+                })
+              }
+            }.bind(this));
+        }
+      );
+    } else {
+      this.checkoutFormGroup.markAllAsTouched();
+      return;
+    }
   }
 
   resetCart() {
@@ -303,31 +378,7 @@ export class CheckoutComponent implements OnInit {
     this.router.navigateByUrl('/products');
   }
 
-  handleMonthsAndYears() {
-    const creditCardFormGroup = this.checkoutFormGroup.get('creditCard');
-
-    const currentYear: number = new Date().getFullYear();
-    const selectedYear: number = Number(
-      creditCardFormGroup.value.expirationYear
-    );
-
-    // if the current year equals the selected year, then start with the current month
-
-    let startMonth: number;
-
-    if (currentYear === selectedYear) {
-      startMonth = new Date().getMonth() + 1;
-    } else {
-      startMonth = 1;
-    }
-
-    this.luv2ShopFormService
-      .getCreditCardMonths(startMonth)
-      .subscribe((data) => {
-        console.log('Retrieved credit card months: ' + JSON.stringify(data));
-        this.creditCardMonths = data;
-      });
-  }
+  
 
   getStates(formGroupName: string) {
     const formGroup = this.checkoutFormGroup.get(formGroupName);

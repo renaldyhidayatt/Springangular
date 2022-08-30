@@ -1,6 +1,7 @@
 package com.fullangular.fullagular.dao;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fullangular.fullagular.entity.Customer;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -25,5 +26,5 @@ public class Country {
 
     @OneToMany(mappedBy = "country")
     @JsonIgnore
-    private List<State> states;
+    private List<Customer.State> states;
 }
